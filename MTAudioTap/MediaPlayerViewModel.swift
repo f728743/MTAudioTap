@@ -13,40 +13,36 @@ import Observation
 final class MediaPlayerViewModel {
     var player: AVPlayer?
     var playerItem: AVPlayerItem!
+    var audioStreamBasicDescription: AudioStreamBasicDescription? // To store ASBD
+    private var audioSampleBuffer: [[Float]] = []
+    let fftSize = 2048
 
-    // looks like you can't stop an audio tap synchronously, so it's possible for your clientInfo/tapStorage
-    // refCon/cookie object to go out of scope while the tap process callback is still being called.
-    // As a solution wrap your object of interest as a weak reference that can be guarded against
-    // inside an object (cookie) whose scope we do control.
+    private let analyzer: RealtimeAnalyzer
+
     class TapCookie {
-        weak var content: AnyObject?
+        weak var content: MediaPlayerViewModel?
 
-        init(content: AnyObject) {
+        init(content: MediaPlayerViewModel) {
             self.content = content
         }
 
         deinit {
-            print("TapCookie deinit") // should appear after finalize
+            print("TapCookie deinit")
         }
     }
 
     let tapInit: MTAudioProcessingTapInitCallback = { _, clientInfo, tapStorageOut in
-        // Make tap storage the same as clientInfo. I guess you might want them to be different.
         tapStorageOut.pointee = clientInfo
     }
 
     let tapFinalize: MTAudioProcessingTapFinalizeCallback = { tap in
         print("finalize \(tap)\n")
-
-        // release cookie
         Unmanaged<TapCookie>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).release()
     }
-
-    let tapProcess: MTAudioProcessingTapProcessCallback =
-    { tap, numberFrames, flags, bufferListInOut, numberFramesOut, flagsOut in
-        print("callback \(tap), \(numberFrames), \(flags), \(bufferListInOut), \(numberFramesOut), \(flagsOut)")
-
-        let status = MTAudioProcessingTapGetSourceAudio(
+    
+    // Corrected tapProcess
+    let tapProcess: MTAudioProcessingTapProcessCallback = { tap, numberFrames, _, bufferListInOut, numberFramesOut, flagsOut in
+        var status = MTAudioProcessingTapGetSourceAudio(
             tap,
             numberFrames,
             bufferListInOut,
@@ -54,18 +50,28 @@ final class MediaPlayerViewModel {
             nil,
             numberFramesOut
         )
+        
         if noErr != status {
-            print("get audio: \(status)\n")
-        }
-
-        let cookie = Unmanaged<TapCookie>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).takeUnretainedValue()
-        guard let cookieContent = cookie.content else {
-            print("Tap callback: cookie content was deallocated!")
+            print("Error getting source audio: \(status)\n")
+            // If MTAudioProcessingTapGetSourceAudio fails, bufferListInOut might not be populated
+            // or might be in an indeterminate state. Depending on the error,
+            // you might want to return early here.
+            // For example, if status indicates a severe error, further processing is likely futile.
             return
         }
-
-//        let appDelegateSelf = cookieContent as! AppDelegate
-//        print("cookie content \(appDelegateSelf)")
+        
+        let cookie = Unmanaged<TapCookie>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).takeUnretainedValue()
+        guard let viewModel = cookie.content else {
+            print("Tap callback: cookie content (MediaPlayerViewModel) was deallocated!")
+            return
+        }
+        
+        guard let asbd = viewModel.audioStreamBasicDescription else {
+            print("Tap callback: ASBD not found in ViewModel!")
+            return
+        }
+        
+        viewModel.processAudioData2(bufferList: bufferListInOut, frames: UInt32(numberFrames))
     }
 
     var tracksObserver: NSKeyValueObservation?
@@ -73,47 +79,93 @@ final class MediaPlayerViewModel {
 
     var isPlaying: Bool = false
 
+    var spectra: [[Float]] = []
+
+    init() {
+        analyzer = RealtimeAnalyzer(fftSize: 2048)
+    }
+
     func play() {
         isPlaying = true
-        doit()
+        doPlay()
     }
 }
 
 private extension MediaPlayerViewModel {
-    func doit() {
-        // some remote resources work. maybe those with ContentLength?
+    func processAudioData2(bufferList: UnsafeMutablePointer<AudioBufferList>, frames: UInt32) {
+        guard let audioDescription = audioStreamBasicDescription else { return }
+        let spectra = analyzer.analyse(
+            bufferList: bufferList,
+            frames: frames,
+            sampleRate: audioDescription.mSampleRate
+        )
+        
+        DispatchQueue.main.async {
+            self.spectra = spectra
+        }
+    }
+    
+    func doPlay() {
         let path = "https://raw.githubusercontent.com/tmp-acc/" +
-        "GTA-V-Radio-Stations/master/common/adverts/ad082_alcoholia.m4a"
-        // let s = "http://live-radio01.mediahubaustralia.com/2LRW/mp3/"    // doesn't work any more
+            "GTA-V-Radio-Stations/master/common/adverts/ad082_alcoholia.m4a"
         let url = URL(string: path)!
-        //        let url = Bundle.main.url(forResource: "foo", withExtension: "m4a")!     // local resource works
 
         playerItem = AVPlayerItem(url: url)
         player = AVPlayer(playerItem: playerItem)
 
-        tracksObserver = playerItem.observe(\AVPlayerItem.tracks) { [unowned self] item, _ in
-            NSLog("tracks change \(item.tracks)")
-            NSLog("asset tracks (btw) \(item.asset.tracks)")
-            installTap(playerItem: playerItem)
+        tracksObserver = playerItem.observe(\AVPlayerItem.tracks, options: [.new, .initial]) { [weak self] item, _ in
+            guard let self else { return }
+            NSLog("PlayerItem tracks changed: \(item.tracks)")
+            // Ensure tracks are loaded before installing tap
+            if !item.tracks.isEmpty {
+                // Check if tap is already installed or if ASBD is already set to avoid redundant setup
+//                if audioStreamBasicDescription == nil {
+                    installTap(playerItem: item)
+//                }
+            }
         }
 
-        statusObservation = playerItem.observe(\AVPlayerItem.status) { [unowned self] object, _ in
-            NSLog("playerItem status change \(object.status.rawValue)")
+        statusObservation = playerItem.observe(
+            \AVPlayerItem.status, options: [.new, .initial]
+        ) { [weak self] object, _ in
+            guard let self else { return }
+            NSLog("PlayerItem status changed: \(object.status.rawValue)")
             if object.status == .readyToPlay {
                 player?.play()
 
-                // indirectly stop and dealloc tap to test finalize and cookie code.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                    print("\"deallocating\" tap")
-                    self.playerItem = nil
-                    self.player = nil
-                }
+                // For testing finalize and cookie deallocation
+                // DispatchQueue.main.asyncAfter(deadline: .now() + 15) { // Increased time
+                //     print("\"deallocating\" tap by resetting playerItem and player")
+                //     self.tracksObserver?.invalidate()
+                //     self.statusObservation?.invalidate()
+                //     self.playerItem?.audioMix = nil // Explicitly remove audioMix to help release tap
+                //     self.playerItem = nil
+                //     self.player = nil
+                //     self.audioStreamBasicDescription = nil // Reset ASBD
+                //     print("Player and playerItem set to nil.")
+                // }
+            } else if object.status == .failed {
+                NSLog("PlayerItem status failed: \(object.error?.localizedDescription ?? "Unknown error")")
             }
         }
     }
 
-    // assumes tracks are loaded
     func installTap(playerItem: AVPlayerItem) {
+        guard let audioTrack = playerItem.asset.tracks(withMediaType: .audio).first else {
+            print("No audio track found.")
+            return
+        }
+
+        // Extract ASBD from the audio track's format descriptions
+        guard let formatDescriptions = audioTrack.formatDescriptions as? [CMFormatDescription],
+              let formatDesc = formatDescriptions.first,
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee
+        else {
+            print("Could not get AudioStreamBasicDescription from track.")
+            return
+        }
+        audioStreamBasicDescription = asbd // Store ASBD
+
         let cookie = TapCookie(content: self)
 
         var callbacks = MTAudioProcessingTapCallbacks(
@@ -123,26 +175,31 @@ private extension MediaPlayerViewModel {
             finalize: tapFinalize,
             prepare: nil,
             unprepare: nil,
-            process: tapProcess
+            process: tapProcess // tapProcess is now a property of the class instance
         )
 
         var tap: Unmanaged<MTAudioProcessingTap>?
         let err = MTAudioProcessingTapCreate(
             kCFAllocatorDefault,
             &callbacks,
-            kMTAudioProcessingTapCreationFlag_PostEffects,
+            kMTAudioProcessingTapCreationFlag_PostEffects, // Or kMTAudioProcessingTapCreationFlag_PreEffects
             &tap
         )
-        assert(noErr == err)
 
-        // let audioTrack = playerItem.tracks.first!.assetTrack!
-        let audioTrack = playerItem.asset.tracks(withMediaType: AVMediaType.audio).first!
+        guard err == noErr, let createdTap = tap else {
+            print("Failed to create audio processing tap. Error: \(err)")
+            Unmanaged.passUnretained(cookie).release() // Manually release cookie if tap creation failed after retain
+            audioStreamBasicDescription = nil // Reset ASBD if tap creation fails
+            return
+        }
+
         let inputParams = AVMutableAudioMixInputParameters(track: audioTrack)
-        inputParams.audioTapProcessor = tap?.takeRetainedValue()
+        inputParams.audioTapProcessor = createdTap.takeRetainedValue()
 
         let audioMix = AVMutableAudioMix()
         audioMix.inputParameters = [inputParams]
 
         playerItem.audioMix = audioMix
+        print("Audio tap installed successfully on track: \(audioTrack.description)")
     }
 }
