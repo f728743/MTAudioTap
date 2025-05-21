@@ -14,6 +14,8 @@ final class MediaPlayerViewModel {
     var player: AVPlayer?
     var playerItem: AVPlayerItem!
     var audioStreamBasicDescription: AudioStreamBasicDescription? // To store ASBD
+    
+    private let analyzer: RealtimeAnalyzer
 
     class TapCookie {
         weak var content: MediaPlayerViewModel?
@@ -93,6 +95,14 @@ final class MediaPlayerViewModel {
 
     var isPlaying: Bool = false
 
+    let bufferSize: Int = 2048
+    var spectra: [[Float]] = []
+    
+    init() {
+        
+        analyzer = RealtimeAnalyzer(fftSize: bufferSize)
+    }
+    
     func play() {
         isPlaying = true
         doPlay()
@@ -102,13 +112,18 @@ final class MediaPlayerViewModel {
 private extension MediaPlayerViewModel {
     func analyse(buffer: AVAudioPCMBuffer) {
         print("Analyzing buffer: \(buffer), frameLength: \(buffer.frameLength), format: \(buffer.format)")
-        if buffer.format.commonFormat == .pcmFormatFloat32 && buffer.frameLength > 0 {
-            if let channelData = buffer.floatChannelData {
-                 // Assuming mono or first channel for simplicity
-                let firstChannelData = channelData[0]
-                print("First float sample of first channel: \(firstChannelData[0])")
-            }
-        }
+        
+        buffer.frameLength = AVAudioFrameCount(bufferSize)
+        spectra = analyzer.analyse(with: buffer)
+
+        
+//        if buffer.format.commonFormat == .pcmFormatFloat32 && buffer.frameLength > 0 {
+//            if let channelData = buffer.floatChannelData {
+//                 // Assuming mono or first channel for simplicity
+//                let firstChannelData = channelData[0]
+//                print("First float sample of first channel: \(firstChannelData[0])")
+//            }
+//        }
     }
     
     func doPlay() {
