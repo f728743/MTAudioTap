@@ -11,7 +11,9 @@ struct MediaPlayerView: View {
     @State var viewModel = MediaPlayerViewModel()
     var body: some View {
         VStack {
-            Text("palaying:  \(viewModel.isPlaying ? "yes" : "no")")
+            AudioSpectra(size: .init(width: 160, height: 200), spectra: viewModel.spectra)
+
+            Text("playing:  \(viewModel.isPlaying ? "yes" : "no")")
                 .padding(.bottom, 60)
             Button(
                 action: {
