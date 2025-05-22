@@ -18,7 +18,6 @@ func convertAudioBufferListToPCMBuffer(
     asbd: AudioStreamBasicDescription, // Передаем копию, чтобы можно было взять указатель
     frameCount: AVAudioFrameCount // Количество аудиокадров (сэмплов на канал)
 ) -> AVAudioPCMBuffer? {
-
     // 1. Определите AVAudioFormat на основе AudioStreamBasicDescription
     //    AVAudioFormat(streamDescription:) ожидает UnsafePointer<AudioStreamBasicDescription>
 //    var mutableAsbd = asbd
@@ -26,7 +25,7 @@ func convertAudioBufferListToPCMBuffer(
 //        print("Не удалось создать AVAudioFormat из ASBD.")
 //        return nil
 //    }
-//    
+//
     // Создание аудиоформата (пример для 44.1 kHz стерео)
     guard let format = AVAudioFormat(
         standardFormatWithSampleRate: asbd.mSampleRate,
@@ -58,7 +57,7 @@ func convertAudioBufferListToPCMBuffer(
             print("Ошибка: Ожидался 1 буфер в AudioBufferList для interleaved-данных, получено \(ablPointer.count).")
             return nil
         }
-        
+
         let sourceAudioBuffer = ablPointer[0] // Один буфер с чередующимися данными
         guard let sourceRawData = sourceAudioBuffer.mData else {
             print("mData для interleaved AudioBuffer равен nil.")
@@ -68,7 +67,7 @@ func convertAudioBufferListToPCMBuffer(
         // Общее количество элементов данных для копирования (например, Float, Int16)
         // для всех каналов в чередующемся буфере.
         let totalElementsToCopy = Int(frameCount) * Int(format.channelCount)
-        
+
 //         Проверка mDataByteSize (опционально, но рекомендуется):
 //         let bytesPerElement = mutableAsbd.mBytesPerFrame / mutableAsbd.mChannelsPerFrame
 //         if sourceAudioBuffer.mDataByteSize < totalElementsToCopy * Int(bytesPerElement) {
@@ -111,18 +110,18 @@ func convertAudioBufferListToPCMBuffer(
         let expectedChannelCount = Int(format.channelCount)
         guard ablPointer.count == expectedChannelCount else {
             print("Расхождение в количестве каналов: AudioBufferList (\(ablPointer.count)) " +
-                  "и AVAudioPCMBuffer (\(expectedChannelCount)) для non-interleaved.")
+                "и AVAudioPCMBuffer (\(expectedChannelCount)) для non-interleaved.")
             return nil
         }
 
-        for channelIndex in 0..<expectedChannelCount {
+        for channelIndex in 0 ..< expectedChannelCount {
             let sourceAudioBuffer = ablPointer[channelIndex] // Буфер для текущего канала
             guard let sourceRawData = sourceAudioBuffer.mData else {
                 print("mData для AudioBuffer канала \(channelIndex) равен nil.")
                 // Можно пропустить этот канал или вернуть ошибку в зависимости от требований
                 continue // или return nil, если это критично
             }
-            
+
             // Проверка mDataByteSize для этого канала (опционально, но рекомендуется):
 //             let bytesPerElement = ... (например, MemoryLayout<Float>.size)
 //             if sourceAudioBuffer.mDataByteSize < Int(frameCount) * bytesPerElement {
@@ -160,7 +159,7 @@ func convertAudioBufferListToPCMBuffer(
                 destChannelData.initialize(from: sourceTypedData, count: Int(frameCount))
             default:
                 print("Неподдерживаемый AVAudioCommonFormat для non-interleaved: " +
-                      "\(format.commonFormat), канал \(channelIndex).")
+                    "\(format.commonFormat), канал \(channelIndex).")
                 // Можно пропустить этот канал или вернуть ошибку
                 continue // или return nil
             }

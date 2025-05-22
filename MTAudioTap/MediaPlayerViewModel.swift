@@ -14,7 +14,7 @@ final class MediaPlayerViewModel {
     var player: AVPlayer?
     var playerItem: AVPlayerItem!
     var audioStreamBasicDescription: AudioStreamBasicDescription? // To store ASBD
-    
+
     private let analyzer: RealtimeAnalyzer
 
     class TapCookie {
@@ -39,21 +39,17 @@ final class MediaPlayerViewModel {
     }
 
     // Corrected tapProcess
-    let tapProcess: MTAudioProcessingTapProcessCallback = {
-        tap, numberFrames, flags, bufferListInOut, numberFramesOut, flagsOut in
-        
-//         print("callback \(tap), \(numberFrames), \(flags), \(bufferListInOut), \(numberFramesOut), \(flagsOut)") // Optional: can be verbose
-                
+    let tapProcess: MTAudioProcessingTapProcessCallback =
+    { tap, numberFrames, _, bufferListInOut, numberFramesOut, flagsOut in
         var status = MTAudioProcessingTapGetSourceAudio(
             tap,
             numberFrames,
-            bufferListInOut, // This pointer is guaranteed to be valid by the system.
-                             // MTAudioProcessingTapGetSourceAudio populates the data it points to.
+            bufferListInOut,
             flagsOut,
             nil,
             numberFramesOut
         )
-        
+
         if noErr != status {
             print("Error getting source audio: \(status)\n")
             // If MTAudioProcessingTapGetSourceAudio fails, bufferListInOut might not be populated
@@ -97,12 +93,11 @@ final class MediaPlayerViewModel {
 
     let bufferSize: Int = 2048
     var spectra: [[Float]] = []
-    
+
     init() {
-        
         analyzer = RealtimeAnalyzer(fftSize: bufferSize)
     }
-    
+
     func play() {
         isPlaying = true
         doPlay()
@@ -111,46 +106,40 @@ final class MediaPlayerViewModel {
 
 private extension MediaPlayerViewModel {
     func analyse(buffer: AVAudioPCMBuffer) {
-        print("Analyzing buffer: \(buffer), frameLength: \(buffer.frameLength), format: \(buffer.format)")
-        
         buffer.frameLength = AVAudioFrameCount(bufferSize)
-        spectra = analyzer.analyse(with: buffer)
-
-        
-//        if buffer.format.commonFormat == .pcmFormatFloat32 && buffer.frameLength > 0 {
-//            if let channelData = buffer.floatChannelData {
-//                 // Assuming mono or first channel for simplicity
-//                let firstChannelData = channelData[0]
-//                print("First float sample of first channel: \(firstChannelData[0])")
-//            }
-//        }
+        let spectra = analyzer.analyse(with: buffer)
+        DispatchQueue.main.async {
+            self.spectra = spectra
+        }
     }
-    
+
     func doPlay() {
         let path = "https://raw.githubusercontent.com/tmp-acc/" +
-        "GTA-V-Radio-Stations/master/common/adverts/ad082_alcoholia.m4a"
+            "GTA-V-Radio-Stations/master/common/adverts/ad082_alcoholia.m4a"
         let url = URL(string: path)!
 
         playerItem = AVPlayerItem(url: url)
         player = AVPlayer(playerItem: playerItem)
 
-        tracksObserver = playerItem.observe(\AVPlayerItem.tracks, options: [.new, .initial]) { [weak self] item, change in
-            guard let self = self else { return }
+        tracksObserver = playerItem.observe(\AVPlayerItem.tracks, options: [.new, .initial]) { [weak self] item, _ in
+            guard let self else { return }
             NSLog("PlayerItem tracks changed: \(item.tracks)")
             // Ensure tracks are loaded before installing tap
             if !item.tracks.isEmpty {
                 // Check if tap is already installed or if ASBD is already set to avoid redundant setup
-                if self.audioStreamBasicDescription == nil {
-                     self.installTap(playerItem: item)
+                if audioStreamBasicDescription == nil {
+                    installTap(playerItem: item)
                 }
             }
         }
 
-        statusObservation = playerItem.observe(\AVPlayerItem.status, options: [.new, .initial]) { [weak self] object, change in
-            guard let self = self else { return }
+        statusObservation = playerItem.observe(
+            \AVPlayerItem.status, options: [.new, .initial]
+        ) { [weak self] object, _ in
+            guard let self else { return }
             NSLog("PlayerItem status changed: \(object.status.rawValue)")
             if object.status == .readyToPlay {
-                self.player?.play()
+                player?.play()
 
                 // For testing finalize and cookie deallocation
                 // DispatchQueue.main.asyncAfter(deadline: .now() + 15) { // Increased time
@@ -178,11 +167,12 @@ private extension MediaPlayerViewModel {
         // Extract ASBD from the audio track's format descriptions
         guard let formatDescriptions = audioTrack.formatDescriptions as? [CMFormatDescription],
               let formatDesc = formatDescriptions.first,
-              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee else {
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee
+        else {
             print("Could not get AudioStreamBasicDescription from track.")
             return
         }
-        self.audioStreamBasicDescription = asbd // Store ASBD
+        audioStreamBasicDescription = asbd // Store ASBD
 
         let cookie = TapCookie(content: self)
 
@@ -203,11 +193,11 @@ private extension MediaPlayerViewModel {
             kMTAudioProcessingTapCreationFlag_PostEffects, // Or kMTAudioProcessingTapCreationFlag_PreEffects
             &tap
         )
-        
+
         guard err == noErr, let createdTap = tap else {
             print("Failed to create audio processing tap. Error: \(err)")
             Unmanaged.passUnretained(cookie).release() // Manually release cookie if tap creation failed after retain
-            self.audioStreamBasicDescription = nil // Reset ASBD if tap creation fails
+            audioStreamBasicDescription = nil // Reset ASBD if tap creation fails
             return
         }
 
