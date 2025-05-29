@@ -14,8 +14,6 @@ final class MediaPlayerViewModel {
     var player: AVPlayer?
     var playerItem: AVPlayerItem!
     var audioStreamBasicDescription: AudioStreamBasicDescription? // To store ASBD
-    private var audioSampleBuffer: [[Float]] = []
-    let fftSize = 2048
 
     private let analyzer: RealtimeAnalyzer
 
@@ -71,7 +69,7 @@ final class MediaPlayerViewModel {
             return
         }
 
-        viewModel.processAudioData2(bufferList: bufferListInOut, frames: UInt32(numberFrames))
+        viewModel.processAudioData(bufferList: bufferListInOut, frames: UInt32(numberFrames))
     }
 
     var tracksObserver: NSKeyValueObservation?
@@ -92,11 +90,10 @@ final class MediaPlayerViewModel {
 }
 
 private extension MediaPlayerViewModel {
-    func processAudioData2(bufferList: UnsafeMutablePointer<AudioBufferList>, frames: UInt32) {
+    func processAudioData(bufferList: UnsafeMutablePointer<AudioBufferList>, frames: UInt32) {
         guard let audioDescription = audioStreamBasicDescription else { return }
         let spectra = analyzer.analyse(
             bufferList: bufferList,
-            frames: frames,
             sampleRate: audioDescription.mSampleRate
         )
 
