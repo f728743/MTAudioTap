@@ -39,7 +39,7 @@ final class MediaPlayerViewModel {
         print("finalize \(tap)\n")
         Unmanaged<TapCookie>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).release()
     }
-    
+
     // Corrected tapProcess
     let tapProcess: MTAudioProcessingTapProcessCallback = { tap, numberFrames, _, bufferListInOut, numberFramesOut, flagsOut in
         var status = MTAudioProcessingTapGetSourceAudio(
@@ -50,7 +50,7 @@ final class MediaPlayerViewModel {
             nil,
             numberFramesOut
         )
-        
+
         if noErr != status {
             print("Error getting source audio: \(status)\n")
             // If MTAudioProcessingTapGetSourceAudio fails, bufferListInOut might not be populated
@@ -59,18 +59,18 @@ final class MediaPlayerViewModel {
             // For example, if status indicates a severe error, further processing is likely futile.
             return
         }
-        
+
         let cookie = Unmanaged<TapCookie>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).takeUnretainedValue()
         guard let viewModel = cookie.content else {
             print("Tap callback: cookie content (MediaPlayerViewModel) was deallocated!")
             return
         }
-        
+
         guard let asbd = viewModel.audioStreamBasicDescription else {
             print("Tap callback: ASBD not found in ViewModel!")
             return
         }
-        
+
         viewModel.processAudioData2(bufferList: bufferListInOut, frames: UInt32(numberFrames))
     }
 
@@ -99,12 +99,12 @@ private extension MediaPlayerViewModel {
             frames: frames,
             sampleRate: audioDescription.mSampleRate
         )
-        
+
         DispatchQueue.main.async {
             self.spectra = spectra
         }
     }
-    
+
     func doPlay() {
         let path = "https://raw.githubusercontent.com/tmp-acc/" +
             "GTA-V-Radio-Stations/master/common/adverts/ad082_alcoholia.m4a"
@@ -120,7 +120,7 @@ private extension MediaPlayerViewModel {
             if !item.tracks.isEmpty {
                 // Check if tap is already installed or if ASBD is already set to avoid redundant setup
 //                if audioStreamBasicDescription == nil {
-                    installTap(playerItem: item)
+                installTap(playerItem: item)
 //                }
             }
         }
