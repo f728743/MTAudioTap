@@ -9,19 +9,18 @@ import AVFoundation
 import Foundation
 
 class RealtimeAnalyzer {
-    struct Band {
-        let lowerFrequency: Float
-        let upperFrequency: Float
-    }
-    
-    public var frequencyBands: Int = 60 // Number of frequency bands
-    public var startFrequency: Float = 100 // Starting frequency
-    public var endFrequency: Float = 18000 // Ending frequency
+    let frequencyBands: Int
+    let startFrequency: Float
+    let endFrequency: Float
+    let spectrumSmooth: Float
 
     private let fftSize: Int
     private var currentSampleRate: Double
-    
-    // Pre-allocated bufferы
+    private lazy var fftSetup = vDSP_create_fftsetup(
+        vDSP_Length(Int(round(log2(Double(fftSize))))), FFTRadix(kFFTRadix2)
+    )
+
+    // Pre-allocated buffers
     private var aWeights: [Float]
     private var processingSamples: [Float]
     private var hannWindow: [Float]
@@ -30,29 +29,31 @@ class RealtimeAnalyzer {
     private var amplitudes: [Float]
     private var weightedAmplitudes: [Float]
     private var spectrum: [Float]
-    private var spectrumBuffer = [[Float]]()
+    private var spectrumBuffer: [[Float]]
     private var bands: [Band]
     private var bandIndices: [(startIndex: Int, endIndex: Int)]
-    
-    private lazy var fftSetup = vDSP_create_fftsetup(
-        vDSP_Length(Int(round(log2(Double(fftSize))))), FFTRadix(kFFTRadix2)
-    )
-    
-        
-    public var spectrumSmooth: Float = 0.5 {
-        didSet {
-            spectrumSmooth = max(0.0, spectrumSmooth)
-            spectrumSmooth = min(1.0, spectrumSmooth)
-        }
-    }
-    
-    init(fftSize: Int) {
-        currentSampleRate = 44100.0
+
+    init(
+        fftSize: Int,
+        frequencyBands: Int = 60,
+        startFrequency: Float = 100,
+        endFrequency: Float = 18000,
+        spectrumSmooth: Float = 0.5
+    ) {
+        precondition(fftSize > 0 && (fftSize & (fftSize - 1)) == 0, "fftSize must be a power of 2")
+        currentSampleRate = 48000.0
+        self.frequencyBands = frequencyBands
+        self.startFrequency = startFrequency
+        self.endFrequency = endFrequency
+        self.spectrumSmooth = spectrumSmooth.clamped(to: 0.0 ... 1.0)
+
         self.fftSize = fftSize
         aWeights = Self.createFrequencyWeights(fftSize: fftSize, sampleRate: currentSampleRate)
         processingSamples = .init(repeating: 0.0, count: fftSize)
-        hannWindow = .init(repeating: 0, count: fftSize)
-        vDSP_hann_window(&hannWindow, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
+        hannWindow = [Float](unsafeUninitializedCapacity: fftSize) { buffer, initializedCount in
+            vDSP_hann_window(buffer.baseAddress!, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
+            initializedCount = fftSize
+        }
         realp = .init(repeating: 0.0, count: fftSize / 2)
         imagp = .init(repeating: 0.0, count: fftSize / 2)
         amplitudes = .init(repeating: 0.0, count: fftSize / 2)
@@ -63,39 +64,43 @@ class RealtimeAnalyzer {
             startFrequency: startFrequency,
             endFrequency: endFrequency
         )
-        
+
         bandIndices = Self.createBandIndices(
             fftSize: fftSize,
             sampleRate: currentSampleRate,
             bands: bands
         )
+
+        spectrumBuffer = .init(repeating: [Float](repeating: 0, count: bands.count), count: 2)
     }
-    
+
     deinit {
-        vDSP_destroy_fftsetup(fftSetup)
+        if let setup = fftSetup {
+            vDSP_destroy_fftsetup(setup)
+        }
     }
-    
+
     func analyse(
         bufferList: UnsafeMutablePointer<AudioBufferList>,
         sampleRate: Double
     ) -> [[Float]] {
         let ablPointer = UnsafeMutableAudioBufferListPointer(bufferList)
         let channelCount = Int(ablPointer.count)
-        
+
         if currentSampleRate != sampleRate {
+            currentSampleRate = sampleRate
             aWeights = Self.createFrequencyWeights(fftSize: fftSize, sampleRate: sampleRate)
             bandIndices = Self.createBandIndices(
                 fftSize: fftSize,
-                sampleRate: currentSampleRate,
+                sampleRate: sampleRate,
                 bands: bands
             )
-            currentSampleRate = sampleRate
         }
-        
+
         if spectrumBuffer.count != channelCount {
             spectrumBuffer = .init(repeating: [Float](repeating: 0, count: bands.count), count: channelCount)
         }
-        
+
         for i in 0 ..< channelCount {
             let buffer = ablPointer[i]
             guard let data = buffer.mData, buffer.mNumberChannels == 1 else { continue }
@@ -104,10 +109,10 @@ class RealtimeAnalyzer {
             guard frameCount > fftSize else { continue }
             memcpy(channelBuf.baseAddress, data, fftSize * MemoryLayout<Float>.size)
             let channel = channelBuf.baseAddress!
-            
+
             // Compute FFT and store results in amplitudes
             fftChannel(channel, output: &amplitudes)
-            
+
             // Compute weighted amplitudes using vDSP_vmul
             vDSP_vmul(
                 amplitudes, 1,
@@ -115,7 +120,7 @@ class RealtimeAnalyzer {
                 &weightedAmplitudes, 1,
                 vDSP_Length(fftSize / 2)
             )
-            
+
             // Compute max amplitude for each frequency band
             for (j, indices) in bandIndices.enumerated() {
                 findMaxAmplitude(
@@ -124,16 +129,16 @@ class RealtimeAnalyzer {
                     output: &spectrum[j]
                 )
             }
-            
+
             // Scale spectrum amplitudes by 5
             vDSP_vsmul(
                 spectrum, 1,
                 [5.0], &spectrum, 1,
                 vDSP_Length(frequencyBands)
             )
-            
+
             let spectrum = highlightWaveform(spectrum: spectrum)
-            
+
             // Apply smoothing to spectrum buffer
             let zipped = zip(spectrumBuffer[i], spectrum)
             spectrumBuffer[i] = zipped.map { $0.0 * spectrumSmooth + $0.1 * (1 - spectrumSmooth) }
@@ -141,9 +146,13 @@ class RealtimeAnalyzer {
         return spectrumBuffer
     }
 }
-    
+
 private extension RealtimeAnalyzer {
-    // swiftlint: disable shorthand_operator
+    struct Band {
+        let lowerFrequency: Float
+        let upperFrequency: Float
+    }
+
     func fftChannel(_ channel: UnsafeMutablePointer<Float>, output amplitudes: inout [Float]) {
         vDSP_vmul(channel, 1, hannWindow, 1, channel, 1, vDSP_Length(fftSize))
 
@@ -166,9 +175,8 @@ private extension RealtimeAnalyzer {
         vDSP_vsmul(fftInOut.realp, 1, [fftNormFactor], fftInOut.realp, 1, vDSP_Length(fftSize / 2))
         vDSP_vsmul(fftInOut.imagp, 1, [fftNormFactor], fftInOut.imagp, 1, vDSP_Length(fftSize / 2))
         vDSP_zvabs(&fftInOut, 1, &amplitudes, 1, vDSP_Length(fftSize / 2))
-        amplitudes[0] = amplitudes[0] / 2 // DC component amplitude needs to be divided by 2
+        amplitudes[0] /= 2 // DC component amplitude needs to be divided by 2
     }
-    // swiftlint: enable shorthand_operator
 
     func findMaxAmplitude(
         for indices: (startIndex: Int, endIndex: Int),
@@ -204,30 +212,30 @@ private extension RealtimeAnalyzer {
         averagedSpectrum.append(contentsOf: Array(spectrum.suffix(startIndex)))
         return averagedSpectrum
     }
-    
+
     static func createFrequencyWeights(fftSize: Int, sampleRate: Double) -> [Float] {
         guard fftSize > 0 else { return [] }
         let deltaF = Float(sampleRate) / Float(fftSize) // Шаг по частоте для одного бина FFT
         let bins = fftSize / 2 // Анализируем fftSize/2 частотных бинов (результат БПФ действительного сигнала)
-        
+
         var f = (0 ..< bins).map { Float($0) * deltaF } // Частота для каждого бина
         f = f.map { $0 * $0 } // f^2
-        
+
         let c1 = powf(12194.217, 2.0)
         let c2 = powf(20.598997, 2.0)
         let c3 = powf(107.65265, 2.0)
         let c4 = powf(737.86223, 2.0)
-        
+
         let num = f.map { c1 * $0 * $0 } // c1 * f^4
         let den = f.map { ($0 + c2) * sqrtf(max(0, ($0 + c3) * ($0 + c4))) * ($0 + c1) }
-        
+
         let weights = num.enumerated().map { index, element -> Float in
             guard den[index] != 0 else { return 0.0 }
             return 1.2589 * element / den[index]
         }
         return weights
     }
-    
+
     static func createBandIndices(
         fftSize: Int,
         sampleRate: Double,
@@ -241,7 +249,7 @@ private extension RealtimeAnalyzer {
             return (startIndex, endIndex)
         }
     }
-    
+
     static func createBands(
         frequencyBands: Int,
         startFrequency: Float,

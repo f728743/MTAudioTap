@@ -39,14 +39,14 @@ final class MediaPlayerViewModel {
     }
 
     // Corrected tapProcess
-    let tapProcess: MTAudioProcessingTapProcessCallback = { tap, numberFrames, _, bufferListInOut, numberFramesOut, flagsOut in
+    let tapProcess: MTAudioProcessingTapProcessCallback = { tap, frames, _, bufferListInOut, framesOut, flagsOut in
         var status = MTAudioProcessingTapGetSourceAudio(
             tap,
-            numberFrames,
+            frames,
             bufferListInOut,
             flagsOut,
             nil,
-            numberFramesOut
+            framesOut
         )
 
         if noErr != status {
@@ -69,7 +69,7 @@ final class MediaPlayerViewModel {
             return
         }
 
-        viewModel.processAudioData(bufferList: bufferListInOut, frames: UInt32(numberFrames))
+        viewModel.processAudioData(bufferList: bufferListInOut)
     }
 
     var tracksObserver: NSKeyValueObservation?
@@ -90,7 +90,7 @@ final class MediaPlayerViewModel {
 }
 
 private extension MediaPlayerViewModel {
-    func processAudioData(bufferList: UnsafeMutablePointer<AudioBufferList>, frames: UInt32) {
+    func processAudioData(bufferList: UnsafeMutablePointer<AudioBufferList>) {
         guard let audioDescription = audioStreamBasicDescription else { return }
         let spectra = analyzer.analyse(
             bufferList: bufferList,
@@ -115,10 +115,9 @@ private extension MediaPlayerViewModel {
             NSLog("PlayerItem tracks changed: \(item.tracks)")
             // Ensure tracks are loaded before installing tap
             if !item.tracks.isEmpty {
-                // Check if tap is already installed or if ASBD is already set to avoid redundant setup
-//                if audioStreamBasicDescription == nil {
-                installTap(playerItem: item)
-//                }
+                Task { [weak self] in
+                    try await self?.installTap(playerItem: item)
+                }
             }
         }
 
@@ -147,15 +146,15 @@ private extension MediaPlayerViewModel {
         }
     }
 
-    func installTap(playerItem: AVPlayerItem) {
-        guard let audioTrack = playerItem.asset.tracks(withMediaType: .audio).first else {
+    func installTap(playerItem: AVPlayerItem) async throws {
+        guard let audioTrack = try await playerItem.asset.loadTracks(withMediaType: .audio).first else {
             print("No audio track found.")
             return
         }
 
         // Extract ASBD from the audio track's format descriptions
-        guard let formatDescriptions = audioTrack.formatDescriptions as? [CMFormatDescription],
-              let formatDesc = formatDescriptions.first,
+        let formatDescriptions = try await audioTrack.load(.formatDescriptions)
+        guard let formatDesc = formatDescriptions.first,
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee
         else {
             print("Could not get AudioStreamBasicDescription from track.")
