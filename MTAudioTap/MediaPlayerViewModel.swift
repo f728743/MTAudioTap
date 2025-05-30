@@ -9,7 +9,7 @@ import AVFoundation
 import Foundation
 import Observation
 
-@Observable
+@MainActor @Observable
 final class MediaPlayerViewModel {
     var player: AVPlayer?
     var playerItem: AVPlayerItem!
@@ -115,7 +115,7 @@ private extension MediaPlayerViewModel {
             NSLog("PlayerItem tracks changed: \(item.tracks)")
             // Ensure tracks are loaded before installing tap
             if !item.tracks.isEmpty {
-                Task { [weak self] in
+                Task { @MainActor [weak self] in
                     try await self?.installTap(playerItem: item)
                 }
             }
@@ -127,8 +127,9 @@ private extension MediaPlayerViewModel {
             guard let self else { return }
             NSLog("PlayerItem status changed: \(object.status.rawValue)")
             if object.status == .readyToPlay {
-                player?.play()
-
+                Task { @MainActor in
+                    self.player?.play()
+                }
                 // For testing finalize and cookie deallocation
                 // DispatchQueue.main.asyncAfter(deadline: .now() + 15) { // Increased time
                 //     print("\"deallocating\" tap by resetting playerItem and player")
